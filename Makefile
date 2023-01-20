@@ -4,6 +4,8 @@ TARGET = daisy-ochd
 # Sources
 CPP_SOURCES = main.cpp
 
+CPP_STANDARD = -include displayDriver.h
+
 # Library Locations
 LIBDAISY_DIR ?= ../DaisyExamples/libDaisy
 DAISYSP_DIR ?= ../DaisyExamples/DaisySP

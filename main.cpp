@@ -1,6 +1,7 @@
 #include <stdio.h>
 #include "daisy_seed.h"
 #include "daisysp.h"
+#include "displayDriver.h"
 #include "dev/oled_ssd130x.h"
 
 using namespace daisy;
@@ -19,6 +20,7 @@ using namespace daisysp;
  *
 */
 
+// TODO Fix OLED drawing (first column is off to last column and higher up)
 // TODO Implement attenuverter
 // TODO Implement waveform switch
 
@@ -38,8 +40,8 @@ const float kLfoFreqRatios[kOutputCount] = {1.0f, 0.551f, 0.271f, 0.16f, 0.084f,
 float lfoValues[kOutputCount];
 size_t blockIndex;
 
-using Display = OledDisplay<SSD130xI2c128x64Driver>;
-Display display;
+OledDisplay<DisplayDriver> display;
+static uint8_t DMA_BUFFER_MEM_SECTION displayBuffer[1025]; // 128 * 64 / 8 + 1
 
 void AudioCallback(AudioHandle::InterleavingInputBuffer in,
                     AudioHandle::InterleavingOutputBuffer out,
@@ -52,6 +54,36 @@ void AudioCallback(AudioHandle::InterleavingInputBuffer in,
     }
 }
 
+void DrawingCallback(void *context, I2CHandle::Result result)
+{
+    display.Fill(false);
+    display.DrawRect(0, 0, 127, 63, true, false);
+    display.DrawLine(0, 32, 123, 32, true);
+    display.DrawLine(32, 0, 32, 63, true);
+    display.DrawLine(63, 0, 63, 63, true);
+    display.DrawLine(94, 0, 94, 63, true);
+
+    uint_fast32_t height = 2 + static_cast<uint_fast32_t>((1 - (lfoValues[0] + 0.5f)) * 29);
+    display.DrawRect(7, height, 27, 30, true, true);
+    height = 2 + static_cast<uint_fast32_t>((1 - (lfoValues[1] + 0.5f)) * 29);
+    display.DrawRect(38, height, 58, 30, true, true);
+    height = 2 + static_cast<uint_fast32_t>((1 - (lfoValues[2] + 0.5f)) * 29);
+    display.DrawRect(69, height, 89, 30, true, true);
+    height = 2 + static_cast<uint_fast32_t>((1 - (lfoValues[3] + 0.5f)) * 29);
+    display.DrawRect(100, height, 120, 30, true, true);
+
+    height = 34 + static_cast<uint_fast32_t>((1 - (lfoValues[4] + 0.5f)) * 29);
+    display.DrawRect(7, height, 27, 61, true, true);
+    height = 34 + static_cast<uint_fast32_t>((1 - (lfoValues[5] + 0.5f)) * 29);
+    display.DrawRect(38, height, 58, 61, true, true);
+    height = 34 + static_cast<uint_fast32_t>((1 - (lfoValues[6] + 0.5f)) * 29);
+    display.DrawRect(69, height, 89, 61, true, true);
+    height = 34 + static_cast<uint_fast32_t>((1 - (lfoValues[7] + 0.5f)) * 29);
+    display.DrawRect(100, height, 120, 61, true, true);
+
+    display.Update();
+}
+
 int main(void)
 {
     // Initialize seed hardware
@@ -59,7 +91,7 @@ int main(void)
     hw.SetAudioSampleRate(SaiHandle::Config::SampleRate::SAI_48KHZ);
     hw.SetAudioBlockSize(kBlockSize);
 
-    float sampleRate = hw.AudioSampleRate();
+    float sampleRate = hw.AudioSampleRate() / 8.0f;
     for (size_t i = 0; i < kOutputCount; i++)
     {
         lfo[i].Init(sampleRate);
@@ -81,7 +113,10 @@ int main(void)
 
     // Configure display
     // Leave to default (used pins are I2C1 SCL and I2C1 SDA)
-    Display::Config cfg;
+    OledDisplay<DisplayDriver>::Config cfg;
+    cfg.driver_config.buffer = displayBuffer;
+    cfg.driver_config.bufferSize = sizeof(displayBuffer);
+    cfg.driver_config.drawingCallback = DrawingCallback;
     display.Init(cfg);
 
     hw.StartAudio(AudioCallback);
@@ -90,12 +125,15 @@ int main(void)
     size_t i, j;
     uint32_t now;
     uint32_t timeSinceLastAdcRead = 0;
-    uint32_t timeSinceLastScreenDraw = 0;
     float adcValue, mappedAdcValue = 0;
+
+    display.Fill(false);
+    display.Update();
+
     for (;;)
 	{
         for (i = 0; i < kOutputCount; i++)
-            pwmThresholds[i] = static_cast<size_t>((lfoValues[i] + 0.5f) * 256); // 8bit dac
+          pwmThresholds[i] = static_cast<size_t>((lfoValues[i] + 0.5f) * 256); // 8bit dac
 
         for (i = 0; i < 256 * 8; i++)
         {
@@ -110,37 +148,6 @@ int main(void)
             mappedAdcValue = fmap(adcValue, kLfoMinFreq, kLfoMaxFreq);
             for (i = 0; i < kOutputCount; i++)
                 lfo[i].SetFreq(mappedAdcValue * kLfoFreqRatios[i]);
-        }
-
-        if (now > timeSinceLastScreenDraw) {
-            timeSinceLastScreenDraw = now + 40; // 25 FPS
-
-            display.Fill(false);
-            display.DrawRect(0,0,127,63,true,false);
-            display.DrawLine(0, 32, 123, 32, true);
-            display.DrawLine(32, 0, 32, 63, true);
-            display.DrawLine(63, 0, 63, 63, true);
-            display.DrawLine(94, 0, 94, 63, true);
-
-            uint_fast32_t height = 2 + static_cast<uint_fast32_t>((1 - (lfoValues[0] + 0.5f))*29);
-            display.DrawRect(7,height,27,30,true,true);
-            height = 2 + static_cast<uint_fast32_t>((1 - (lfoValues[1] + 0.5f))*29);
-            display.DrawRect(38,height,58,30,true,true);
-            height = 2 + static_cast<uint_fast32_t>((1 - (lfoValues[2] + 0.5f))*29);
-            display.DrawRect(69,height,89,30,true,true);
-            height = 2 + static_cast<uint_fast32_t>((1 - (lfoValues[3] + 0.5f))*29);
-            display.DrawRect(100,height,120,30,true,true);
-
-            height = 34 + static_cast<uint_fast32_t>((1 - (lfoValues[4] + 0.5f))*29);
-            display.DrawRect(7,height,27,61,true,true);
-            height = 34 + static_cast<uint_fast32_t>((1 - (lfoValues[5] + 0.5f))*29);
-            display.DrawRect(38,height,58,61,true,true);
-            height = 34 + static_cast<uint_fast32_t>((1 - (lfoValues[6] + 0.5f))*29);
-            display.DrawRect(69,height,89,61,true,true);
-            height = 34 + static_cast<uint_fast32_t>((1 - (lfoValues[7] + 0.5f))*29);
-            display.DrawRect(100,height,120,61,true,true);
-
-            display.Update();
         }
 	}
 }
