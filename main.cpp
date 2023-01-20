@@ -3,6 +3,9 @@
 #include "daisysp.h"
 #include "displayDriver.h"
 #include "dev/oled_ssd130x.h"
+#if DEBUG == 1
+#include <algorithm>
+#endif
 
 using namespace daisy;
 using namespace daisysp;
@@ -21,6 +24,7 @@ using namespace daisysp;
 */
 
 // TODO Fix OLED drawing (first column is off to last column and higher up)
+// TODO Try running PWM in AudioCallback at 16 or 32kHz with a block size of 1
 // TODO Implement attenuverter
 // TODO Implement waveform switch
 
@@ -91,7 +95,13 @@ int main(void)
     hw.SetAudioSampleRate(SaiHandle::Config::SampleRate::SAI_48KHZ);
     hw.SetAudioBlockSize(kBlockSize);
 
-    float sampleRate = hw.AudioSampleRate() / 8.0f;
+    #if DEBUG == 1
+    hw.StartLog(true);
+    hw.PrintLine("Debug start");
+    hw.PrintLine("Tick freq %dHz", System::GetTickFreq());
+    #endif
+
+    float sampleRate = hw.AudioSampleRate();
     for (size_t i = 0; i < kOutputCount; i++)
     {
         lfo[i].Init(sampleRate);
@@ -112,7 +122,6 @@ int main(void)
         hwPin[i].Init(kPins[i], GPIO::Mode::OUTPUT, GPIO::Pull::NOPULL, GPIO::Speed::VERY_HIGH);
 
     // Configure display
-    // Leave to default (used pins are I2C1 SCL and I2C1 SDA)
     OledDisplay<DisplayDriver>::Config cfg;
     cfg.driver_config.buffer = displayBuffer;
     cfg.driver_config.bufferSize = sizeof(displayBuffer);
@@ -130,24 +139,54 @@ int main(void)
     display.Fill(false);
     display.Update();
 
+    #if DEBUG == 1
+    uint32_t computing[4] = {0, 0, UINT32_MAX, 0}, writing[4] = {0, 0, UINT32_MAX, 0}, current = 0;
+    uint32_t timeSinceLastReport = 0;
+    #endif
     for (;;)
 	{
+        #if DEBUG == 1
+        computing[0] = System::GetTick();
+        #endif
         for (i = 0; i < kOutputCount; i++)
           pwmThresholds[i] = static_cast<size_t>((lfoValues[i] + 0.5f) * 256); // 8bit dac
 
+        #if DEBUG == 1
+        writing[0] = System::GetTick();
+        #endif
         for (i = 0; i < 256 * 8; i++)
         {
             j = i & 7;
             hwPin[j].Write((i >> 3) < pwmThresholds[j]);
         }
 
+        #if DEBUG == 1
+        current = System::GetTick();
+
+        computing[1] = std::max(writing[0] - computing[0], computing[1]);
+        computing[2] = std::min(writing[0] - computing[0], computing[2]);
+        computing[3] = static_cast<uint32_t>(computing[3] * 0.75f + (writing[0] - computing[0]) * 0.25f);
+
+        writing[1] = std::max(current - writing[0], writing[1]);
+        writing[2] = std::min(current - writing[0], writing[2]);
+        writing[3] = static_cast<uint32_t>(writing[3] * 0.75f + (current - writing[0]) * 0.25f);
+        #endif
+
         now = System::GetNow();
         if (now > timeSinceLastAdcRead) {
-            timeSinceLastAdcRead = now + 10;
+            timeSinceLastAdcRead = now + 10; // 10Hz
             adcValue = fclamp(hw.adc.GetFloat(0) + hw.adc.GetFloat(1), 0, 1);
             mappedAdcValue = fmap(adcValue, kLfoMinFreq, kLfoMaxFreq);
             for (i = 0; i < kOutputCount; i++)
                 lfo[i].SetFreq(mappedAdcValue * kLfoFreqRatios[i]);
         }
+
+        #if DEBUG == 1
+        if (now > timeSinceLastReport) {
+            timeSinceLastReport = now + 500; // 2Hz
+            hw.PrintLine("Computing: Min: %d, Max: %d, Avg: %d", computing[2], computing[1], computing[3]);
+            hw.PrintLine("Writing: Min: %d, Max: %d, Avg: %d", writing[2], writing[1], writing[3]);
+        }
+        #endif
 	}
 }
